@@ -106,6 +106,22 @@ from src.components.salary_predict.salary_mlflow_tracker import (
 )
 
 # ======================================================================
+# MODEL REGISTRY
+# ======================================================================
+
+from src.components.salary_model_registry import (
+    SalaryModelRegistry,
+)
+
+from src.configs.salary_model_registry_config import (
+    SalaryModelRegistryConfig,
+)
+
+from src.entity.salary_model_registry_entity import (
+    SalaryModelRegistryResult,
+)
+
+# ======================================================================
 # PIPELINE RESULT
 # ======================================================================
 
@@ -181,6 +197,17 @@ class SalaryModelPipelineResult:
     mlflow_run_id: Optional[str] = None
 
     # --------------------------------------------------------------
+    # Model Registry
+    # --------------------------------------------------------------
+
+    registered_model_name: Optional[str] = None
+    registered_model_version: Optional[str] = None
+    registered_model_uri: Optional[str] = None
+    production_alias: Optional[str] = None
+    alias_updated: Optional[bool] = None
+    model_registry_success: Optional[bool] = None
+
+    # --------------------------------------------------------------
     # Timing
     # --------------------------------------------------------------
 
@@ -205,7 +232,11 @@ class SalaryModelPipelineOrchestrator:
 
     The orchestrator owns ONLY execution order and stage boundaries.
 
-    Existing components remain responsible for their own work.
+    Existing components remain responsible for their own work:
+
+        SalaryMLflowTracker    -> MLflow run/artifact tracking
+        SalaryModelRegistry    -> registered model / version / alias
+        SalaryModelRegistryConfig -> registered model name / alias name
     """
 
     def __init__(
@@ -213,11 +244,13 @@ class SalaryModelPipelineOrchestrator:
         feature_engineering_config: Optional[SalaryFeatureEngineeringConfig] = None,
         splitter_config: Optional[SalaryDatasetSplitterConfig] = None,
         final_model_config: Optional[SalaryFinalModelConfig] = None,
+        model_registry_config: Optional[SalaryModelRegistryConfig] = None,
         feature_runner: Optional[SalaryFeatureExperimentRunner] = None,
         model_family_runner: Optional[SalaryModelFamilyExperimentRunner] = None,
         tuning_runner: Optional[SalaryModelTuningRunner] = None,
         final_model_trainer: Optional[SalaryFinalModelTrainer] = None,
         mlflow_tracker: Optional[SalaryMLflowTracker] = None,
+        model_registry: Optional[SalaryModelRegistry] = None,
     ) -> None:
 
         # ============================================================
@@ -242,6 +275,71 @@ class SalaryModelPipelineOrchestrator:
         # ============================================================
 
         self.mlflow_tracker = mlflow_tracker or SalaryMLflowTracker()
+        
+        # ============================================================
+        # MODEL REGISTRY
+        #
+        # tracking_uri is resolved from the environment
+        # (MLFLOW_TRACKING_URI / APP_ENV), NOT inherited from the
+        # tracker's config. This is the one authoritative resolution
+        # point for where models get registered: local runs default
+        # to sqlite:///mlflow.db, Docker/production REQUIRES
+        # MLFLOW_TRACKING_URI to be set (e.g. http://mlflow-server:5000)
+        # and raises rather than silently falling back.
+        #
+        # SalaryMLflowTracker's own tracking_uri is a separate,
+        # pre-existing setting we don't own here. If it disagrees with
+        # the resolved registry URI, the model that Stage 7 logs and
+        # the server Stage 10B registers against are different MLflow
+        # backends -- registration will fail (or worse, silently
+        # register a URI the production server can't read). We check
+        # for that explicitly instead of finding out via a cryptic
+        # MlflowException deep in register().
+        # ============================================================
+
+        self.model_registry_config = (
+            model_registry_config or SalaryModelRegistryConfig.from_env()
+        )
+
+        logging.info(
+            "Model registry resolved environment=%s tracking_uri=%s",
+            self.model_registry_config.environment,
+            self.model_registry_config.tracking_uri,
+        )
+
+        tracker_tracking_uri = getattr(
+            self.mlflow_tracker.config,
+            "tracking_uri",
+            None,
+        )
+
+        if (
+            tracker_tracking_uri
+            and self.model_registry_config.tracking_uri
+            and tracker_tracking_uri != self.model_registry_config.tracking_uri
+        ):
+
+            mismatch_message = (
+                "SalaryMLflowTracker.config.tracking_uri "
+                f"({tracker_tracking_uri!r}) does not match the "
+                "resolved model registry tracking_uri "
+                f"({self.model_registry_config.tracking_uri!r}). "
+                "Models logged by the tracker will not be visible to "
+                "the registry's MLflow server, so registration in "
+                "Stage 10B will fail or register an unreachable URI. "
+                "Point SalaryMLflowTracker at the same "
+                "MLFLOW_TRACKING_URI."
+            )
+
+            if self.model_registry_config.environment == "production":
+
+                raise RuntimeError(mismatch_message)
+
+            logging.warning(mismatch_message)
+
+        self.model_registry = model_registry or SalaryModelRegistry(
+            config=self.model_registry_config
+        )
 
         # ============================================================
         # FEATURE ENGINEERING
@@ -712,6 +810,8 @@ class SalaryModelPipelineOrchestrator:
             # CRITICAL:
             #
             # Do NOT evaluate test data if validation failed.
+            #
+            # Do NOT register/promote a model that failed validation.
             # ----------------------------------------------------------
 
             if not validation_passed:
@@ -789,6 +889,47 @@ class SalaryModelPipelineOrchestrator:
             )
 
             # ==========================================================
+            # STAGE 10B
+            # MLFLOW MODEL REGISTRY PROMOTION
+            #
+            # Runs ONLY after:
+            #   - validation_passed == True   (Stage 8)
+            #   - test evaluation completed    (Stage 9)
+            #   - local artifact verified      (Stage 10)
+            #
+            # Exactly one new registered version is created here per
+            # successful pipeline execution, reusing the final model
+            # already logged to MLflow in Stage 7 (without a version,
+            # since SalaryFinalModelTrainer now calls
+            # log_final_model(..., register_model=False)).
+            #
+            # If this fails, the exception propagates out of run()
+            # as a CustomException -- the pipeline does NOT return a
+            # success=True result, because a locally saved model
+            # without successful registry promotion is not considered
+            # a successful production pipeline.
+            # ==========================================================
+
+            start = perf_counter()
+
+            logging.info("")
+            logging.info("=" * 90)
+            logging.info("STAGE 10B - MODEL REGISTRY PROMOTION")
+            logging.info("=" * 90)
+
+            registry_result = self._register_final_model(
+                final_result=final_result,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+                promoted_model_path=promoted_model_path,
+            )
+
+            stage_times["model_registry_promotion"] = round(
+                perf_counter() - start,
+                4,
+            )
+
+            # ==========================================================
             # PIPELINE SUMMARY
             # ==========================================================
 
@@ -843,6 +984,12 @@ class SalaryModelPipelineOrchestrator:
                         None,
                     )
                 ),
+                registered_model_name=(registry_result.registered_model_name),
+                registered_model_version=(registry_result.model_version),
+                registered_model_uri=(registry_result.model_uri),
+                production_alias=(registry_result.production_alias),
+                alias_updated=(registry_result.alias_updated),
+                model_registry_success=(registry_result.success),
                 stage_times=stage_times,
                 total_execution_seconds=round(
                     total_seconds,
@@ -888,6 +1035,14 @@ class SalaryModelPipelineOrchestrator:
             logging.info(
                 "Final artifact : %s",
                 result.final_model_path,
+            )
+
+            logging.info(
+                "Registered model: %s v%s (alias '%s' -> %s)",
+                result.registered_model_name,
+                result.registered_model_version,
+                result.production_alias,
+                result.registered_model_version,
             )
 
             logging.info(
@@ -1300,6 +1455,96 @@ class SalaryModelPipelineOrchestrator:
         return canonical_path
 
     # ==================================================================
+    # MODEL REGISTRY PROMOTION
+    # ==================================================================
+
+    def _register_final_model(
+        self,
+        final_result: Any,
+        validation_metrics: Dict[str, float],
+        test_metrics: Dict[str, float],
+        promoted_model_path: Path,
+    ) -> SalaryModelRegistryResult:
+        """
+        Register the final validated/tested model in MLflow Model
+        Registry and point the production alias at the newly created
+        version.
+
+        Only ever called after Stage 8 (validation) and Stage 9 (test)
+        have both already succeeded, so ``validation_passed=True`` is
+        hardcoded here rather than re-derived -- the caller (run())
+        already returned early on the validation-failure path.
+
+        Reuses SalaryModelRegistry.register() exclusively; no
+        mlflow.sklearn.log_model() or create_model_version() calls are
+        made here.
+        """
+
+        model_uri = getattr(
+            final_result,
+            "registered_model_uri",
+            None,
+        )
+
+        if not model_uri:
+
+            raise RuntimeError(
+                "Final model trainer did not return a logged MLflow "
+                "model URI (registered_model_uri is empty). This "
+                "usually means MLflow tracking is disabled or "
+                "SalaryFinalModelTrainer.log_final_model() failed "
+                "silently upstream. Model registry promotion cannot "
+                "proceed, and a locally saved model without "
+                "successful registry promotion is not considered a "
+                "successful production pipeline."
+            )
+
+        source_run_id = getattr(
+            final_result,
+            "mlflow_run_id",
+            None,
+        )
+
+        metadata = {
+            "model_name": getattr(final_result, "model_name", None),
+            "model_class_name": getattr(final_result, "model_class_name", None),
+            "feature_experiment_id": getattr(
+                final_result,
+                "feature_experiment_id",
+                None,
+            ),
+            "model_experiment_id": getattr(
+                final_result,
+                "model_experiment_id",
+                None,
+            ),
+        }
+
+        # Drop empty metadata values; SalaryModelRegistry._set_tags
+        # str()-ifies every value it receives.
+        metadata = {key: value for key, value in metadata.items() if value is not None}
+
+        registry_result = self.model_registry.register(
+            model_uri=model_uri,
+            source_run_id=source_run_id,
+            model_artifact_path=str(promoted_model_path.resolve()),
+            validation_passed=True,
+            validation_metrics=validation_metrics,
+            test_metrics=test_metrics,
+            metadata=metadata,
+            promote_to_production=True,
+        )
+
+        if not registry_result.success:
+
+            raise RuntimeError(
+                "Model registry promotion failed: "
+                f"{registry_result.error}"
+            )
+
+        return registry_result
+
+    # ==================================================================
     # VALIDATION RESULT
     # ==================================================================
 
@@ -1531,6 +1776,10 @@ class SalaryModelPipelineOrchestrator:
             validation_passed=False,
             final_model_path=(final_result.model_artifact_path),
             final_model_artifact_directory=(final_result.artifact_directory),
+            # Registry fields left at their Optional defaults (None):
+            # registration is never attempted on the validation-failure
+            # path, per requirement that a failed validation gate must
+            # never register or promote a model.
             stage_times=stage_times,
             total_execution_seconds=round(
                 perf_counter() - pipeline_start,
@@ -1629,6 +1878,13 @@ if __name__ == "__main__":
         logging.info(
             "Final model: %s",
             result.final_model_path,
+        )
+
+        logging.info(
+            "Registered: %s v%s -> alias '%s'",
+            result.registered_model_name,
+            result.registered_model_version,
+            result.production_alias,
         )
 
     else:

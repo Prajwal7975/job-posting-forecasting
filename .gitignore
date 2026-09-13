@@ -1,45 +1,53 @@
 # ======================================================
 # Python
 # ======================================================
+
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.so
-*.pyc
 
 # ======================================================
 # Virtual Environments
 # ======================================================
+
 venv/
 .venv/
 env/
 
 # ======================================================
-# IDEs
+# IDE
 # ======================================================
+
 .vscode/
 .idea/
 
 # ======================================================
 # Jupyter
 # ======================================================
+
 .ipynb_checkpoints/
 
 # ======================================================
-# Environment Variables
+# Environment / Secrets
 # ======================================================
+
 .env
+.env.*
+!.env.example
 
 # ======================================================
 # Logs
 # ======================================================
-# logs/
-# *.log
+
+logs/
+*.log
 
 # ======================================================
 # Testing
 # ======================================================
+
 .pytest_cache/
 .coverage
 coverage.xml
@@ -48,61 +56,48 @@ htmlcov/
 # ======================================================
 # MLflow
 # ======================================================
+
 mlruns/
 mlflow.db
 
 # ======================================================
 # Generated Artifacts
 # ======================================================
-artifacts/master_dataset/latest/
-artifacts/master_dataset/archive/
-artifacts/Summary_reports/
-artifacts/master_dataset/
-# logs/
-*.parquet
-artifacts/feature_store/
-artifacts/*.csv
-artifacts/reports/feature_experiments/  
+
 artifacts/
-mlruns/
-*.joblib
-*.pkl
-*.pickle
-*.db
-*.tmp
-*.temp
-.DS_Store
-Thumbs.db
-artifacts/salary_dataset_splits/
-
-
 
 # ======================================================
 # Models
 # ======================================================
-models/*.pkl
-models/*.joblib
-models/*.onnx
-models/*.h5
+
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.h5
 
 # ======================================================
-# Data
+# Datasets
 # ======================================================
+
+*.parquet
+*.csv
+
 data/raw/
 data/interim/
 data/processed/
 
-# Ignore generated datasets
-*.parquet
+# ======================================================
+# Temporary
+# ======================================================
 
-# Ignore CSV datasets (remove this if you intentionally
-# keep small sample CSVs in the repository)
-*.csv
+*.tmp
+*.temp
+*.db
 
 # ======================================================
-# OS Files
+# OS
 # ======================================================
+
 .DS_Store
 Thumbs.db
-
-!artifacts/Summary_reports/

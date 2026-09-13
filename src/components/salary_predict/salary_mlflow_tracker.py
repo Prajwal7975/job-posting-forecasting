@@ -741,7 +741,39 @@ class SalaryMLflowTracker:
         self,
         fitted_workflow: Any,
         registered_model_name: Optional[str] = None,
+        register_model: bool = True,
     ) -> Optional[str]:
+        """
+        Log the final sklearn Pipeline as an MLflow model artifact.
+
+        Parameters
+        ----------
+        fitted_workflow:
+            The fitted preprocessor+model sklearn Pipeline.
+
+        registered_model_name:
+            Name to register under, if ``register_model`` is True.
+            Falls back to ``self.config.registered_model_name``.
+
+        register_model:
+            When True (default, preserves prior behavior), passes
+            ``registered_model_name`` to ``mlflow.sklearn.log_model``,
+            which causes MLflow to auto-create a new Model Registry
+            version as a side effect of logging.
+
+            When False, the model is logged as a plain MLflow model
+            artifact (still governed by the same run) WITHOUT creating
+            any Model Registry version. Use this when a separate
+            component (e.g. SalaryModelRegistry) is responsible for
+            explicitly creating the registered version and assigning
+            aliases, to avoid creating two versions for one logged
+            model.
+
+        Returns
+        -------
+        The MLflow model URI (e.g. ``runs:/<run_id>/final_model``),
+        or None if tracking is disabled.
+        """
 
         if fitted_workflow is None:
             raise ValueError("fitted_workflow must not be None.")
@@ -761,18 +793,31 @@ class SalaryMLflowTracker:
 
             logging.info("Logging final sklearn Pipeline to MLflow.")
 
-            logging.info("Registering model as: %s", model_name)
-
-            model_info = mlflow.sklearn.log_model(
-                sk_model=fitted_workflow,
-                name="final_model",
-                registered_model_name=model_name,
-                skops_trusted_types=[
+            log_model_kwargs: Dict[str, Any] = {
+                "sk_model": fitted_workflow,
+                "name": "final_model",
+                "skops_trusted_types": [
                     "numpy.dtype",
                     "src.components.salary_predict.salary_preprocessor_builder.SafeCategoricalTransformer",
                     "src.components.salary_predict.salary_preprocessor_builder.SafeTextTransformer",
                 ],
-            )
+            }
+
+            if register_model:
+
+                logging.info("Registering model as: %s", model_name)
+
+                log_model_kwargs["registered_model_name"] = model_name
+
+            else:
+
+                logging.info(
+                    "Logging model WITHOUT auto-registration "
+                    "(register_model=False). A separate registry "
+                    "component is expected to create the version."
+                )
+
+            model_info = mlflow.sklearn.log_model(**log_model_kwargs)
 
             model_uri = model_info.model_uri
 
@@ -780,10 +825,12 @@ class SalaryMLflowTracker:
 
             logging.info("MLflow model URI: %s", model_uri)
 
-            logging.info(
-                "Model registered successfully: %s",
-                model_name,
-            )
+            if register_model:
+
+                logging.info(
+                    "Model registered successfully: %s",
+                    model_name,
+                )
 
             return model_uri
 

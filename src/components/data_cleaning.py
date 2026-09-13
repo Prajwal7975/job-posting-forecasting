@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 import numpy as np
 import pandas as pd
+import sys
 
 from src.logger import logging
 from src.exception import CustomException
@@ -84,16 +85,12 @@ class DataCleaning:
                 clean_s = clean_s.str.lower()
 
             if self.config.convert_empty_strings_to_null:
-                clean_s = clean_s.replace(
-                    r"^\s*$", np.nan, regex=True
-                ).replace(
+                clean_s = clean_s.replace(r"^\s*$", np.nan, regex=True).replace(
                     {"nan": np.nan, "None": np.nan, "<NA>": np.nan, "": np.nan}
                 )
 
             sentinel = "__NULL_SENTINEL__"
-            diff_mask = (
-                original_s.fillna(sentinel) != clean_s.fillna(sentinel)
-            )
+            diff_mask = original_s.fillna(sentinel) != clean_s.fillna(sentinel)
             strings_modified += int(diff_mask.sum())
 
             df[col] = clean_s
@@ -128,11 +125,11 @@ class DataCleaning:
         """Aligns datatypes with Schema Alignment as the single source of truth."""
         df = df.copy()
         conversions = 0
-        
+
         schema_config = self.config.schema_alignment_config
         table_schema = schema_config.table_schemas.get(table_name)
-        
-        target_dtypes = (table_schema.canonical_dtypes if table_schema else {} )
+
+        target_dtypes = table_schema.canonical_dtypes if table_schema else {}
 
         for col, target_dtype in target_dtypes.items():
             if col in df.columns:
@@ -140,9 +137,9 @@ class DataCleaning:
                     current_dtype = str(df[col].dtype)
                     if current_dtype != target_dtype:
                         if target_dtype == "Int64":
-                            df[col] = pd.to_numeric(
-                                df[col], errors="coerce"
-                            ).astype("Int64")
+                            df[col] = pd.to_numeric(df[col], errors="coerce").astype(
+                                "Int64"
+                            )
                         else:
                             df[col] = df[col].astype(target_dtype)
                         conversions += 1
@@ -253,9 +250,7 @@ class DataCleaning:
 
         try:
             for version_name, tables in validated_data.items():
-                logging.info(
-                    f"Cleaning {version_name} ({len(tables)} tables detected)"
-                )
+                logging.info(f"Cleaning {version_name} ({len(tables)} tables detected)")
                 cleaned_data[version_name] = {}
 
                 parent_tables = ["companies", "postings", "industries", "skills"]
@@ -280,12 +275,8 @@ class DataCleaning:
                         df, dtype_conversions = self._convert_dtypes(
                             df, table_name, version_name
                         )
-                        df, invalid_handled = self._handle_invalid_values(
-                            df, rule
-                        )
-                        df, duplicates_removed = self._remove_duplicates(
-                            df, rule
-                        )
+                        df, invalid_handled = self._handle_invalid_values(df, rule)
+                        df, duplicates_removed = self._remove_duplicates(df, rule)
                         df, orphan_rows_removed = self._remove_orphans(
                             df, rule, cleaned_data[version_name]
                         )
@@ -330,7 +321,7 @@ class DataCleaning:
                             f"[{version_name}/{table_name}] Cleaning failed: {e}"
                         )
                         if not self.config.continue_on_error:
-                            raise CustomException(e)
+                            raise CustomException(e, sys)
 
             total_execution_time = time.time() - start_time
             total_removed = total_rows_before - total_rows_after
@@ -373,4 +364,4 @@ class DataCleaning:
 
         except Exception as e:
             logging.error(f"Critical error occurred during Data Cleaning: {str(e)}")
-            raise CustomException(e)
+            raise CustomException(e, sys)

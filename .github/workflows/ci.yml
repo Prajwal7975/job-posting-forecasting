@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  test:
+
+    name: Python Tests
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------
+      # Checkout
+      # --------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------
+      # Python
+      # --------------------------------------------------
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # --------------------------------------------------
+      # Dependencies
+      # --------------------------------------------------
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # --------------------------------------------------
+      # Basic import check
+      # --------------------------------------------------
+
+      - name: Verify project imports
+        run: |
+          python -c "from src.exception import CustomException"
+          python -c "from src.logger import logging"
+          python -c "from src.components.schema_alignment import SchemaAlignment"
+          python -c "from src.components.salary_predict.salary_model_factory import SalaryModelFactory"
+          echo "Project imports successful"
+
+      # --------------------------------------------------
+      # Unit / component tests
+      # --------------------------------------------------
+
+      - name: Run tests
+        run: |
+          pytest -q

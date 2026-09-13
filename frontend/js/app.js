@@ -11,7 +11,8 @@ const USD_TO_INR = 88.0;
 // Store the latest prediction in USD.
 let latestSalaryUSD = null;
 
-const API_URL = "http://127.0.0.1:8000/api/v1/predict";
+// API is accessed through the frontend's Nginx reverse proxy.
+const API_URL = "/api/v1/predict";
 
 const form = document.getElementById("salary-form");
 

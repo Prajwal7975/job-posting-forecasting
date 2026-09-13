@@ -593,38 +593,45 @@ class SalaryFinalModelTrainer:
             logging.info("QUALITY GATE PASSED.")
 
             logging.info(
-                "REGISTERING FINAL MODEL: %s",
+                "LOGGING FINAL MODEL TO MLFLOW: %s",
                 registered_model_name,
             )
+
+            # ----------------------------------------------------------
+            # IMPORTANT:
+            #
+            # register_model=False here is intentional. Registry
+            # version creation and production-alias promotion are
+            # deferred to the master orchestrator, which only does so
+            # AFTER the final holdout test evaluation (a later stage
+            # this component has no visibility into) also succeeds.
+            #
+            # Auto-registering here (as before) would create a Model
+            # Registry version for a model that has only cleared the
+            # validation gate, not the test gate, and would create a
+            # second, duplicate version once the orchestrator's
+            # SalaryModelRegistry also registers the final candidate.
+            # ----------------------------------------------------------
 
             model_uri = self.mlflow_tracker.log_final_model(
                 fitted_workflow=pipeline,
                 registered_model_name=(registered_model_name),
+                register_model=False,
             )
 
             result.registered_model_name = registered_model_name
 
             result.registered_model_uri = model_uri
 
-            # ----------------------------------------------------------
-            # Get created model version
-            # ----------------------------------------------------------
-
-            if hasattr(
-                self.mlflow_tracker,
-                "get_latest_model_version",
-            ):
-
-                version = self.mlflow_tracker.get_latest_model_version(
-                    registered_model_name
-                )
-
-                result.registered_model_version = version
+            # registered_model_version intentionally left unset here.
+            # No Model Registry version exists yet at this stage; the
+            # orchestrator populates it after test evaluation passes
+            # and SalaryModelRegistry.register() actually creates one.
 
             logging.info(
-                "MODEL REGISTRATION COMPLETE | " "name=%s | version=%s | uri=%s",
+                "FINAL MODEL LOGGED (not yet registered) | "
+                "name=%s | uri=%s",
                 result.registered_model_name,
-                result.registered_model_version,
                 result.registered_model_uri,
             )
 
